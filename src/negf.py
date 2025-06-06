@@ -25,11 +25,9 @@ import scipy.linalg as linalg
 from turbomole import TM
 from band import BAND
 from mrcc import MRCC
-from GreenFunction import get_gf, get_LeadSurfaceGFinv, get_LeadSelfEnergy, get_gf_lcao, get_dos
-from transmission import calc_t_coeff
+from GreenFunction import get_gf, get_LeadSurfaceGFinv, get_LeadSelfEnergy, get_gf_lcao
 ###############################################################################
-from general import is_pos_def, is_hermitian, create_fn, print_M, read_M
-from wbl_gf import get_gf_hf_eig
+from general import is_pos_def, is_hermitian, create_fn
 
 ###############################################################################
 # %% MAIN

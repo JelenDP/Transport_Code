@@ -1,0 +1,266 @@
+program print_trnd
+implicit none
+call ricc2trnden
+end program print_trnd
+
+!==================================================================================================================================!
+subroutine ricc2trnden()
+!----------------------------------------------------------------------------------------------------------------------------------!
+! read and write transition densities
+!----------------------------------------------------------------------------------------------------------------------------------!
+implicit none
+
+!character(len=4), intent(in) :: ityp
+!real(8), intent(in) :: vint(nao,nao,nspin)
+!real(8) ddot
+character(len=80) filename
+character(len=16) ctypden                       !binary output from TM, contains transition density matrix 
+character(len=20) trd_out                       
+character(len=7)  control
+character(len=200) line                         !reading line
+character(len=100) line2                        !reading line2
+character(len=4) ityp                           !label of irrep
+character(len=4) str_istate                     !number of states within an irrep
+character(len=10) method
+integer :: nao, nspin, nstate, nirrep           !number of MOs, uhf=2/rhf=1, number of states in a irrep, number of irrep
+integer :: imult, ispin, istate                 !multiplicity, spin, number of state 
+integer :: iao, jao, kao                        !index for MOs reading/writing
+integer :: iunit, ierr, tmplen, i, irrep, max_states        !file iots, some tmp for len, some indexies, nmax number of states
+character(len=4), allocatable :: ityps(:)       !list of irreps
+integer, allocatable :: multis(:)               !list of multiplicities
+integer, allocatable :: states(:)               !list of number of states
+real(8), allocatable :: trdenright_vector(:), trdenleft_vector(:)
+real(8), allocatable :: trdenright(:,:,:),trdenleft(:,:,:)    !right and left transition density matrix (MO,MO,spin)
+logical exists      !if file exist, then it's TRUE otherwise FALSE
+
+iunit = 66
+
+!----------------------------------------------------------------------------------------------------------------------------------!
+! state info:
+!----------------------------------------------------------------------------------------------------------------------------------!
+max_states = 10
+allocate(ityps(max_states))
+allocate(multis(max_states))
+allocate(states(max_states))
+nspin = 1
+nirrep = 1
+
+!----------------------------------------------------------------------------------------------------------------------------------!
+! read nao, nspin, istate, multis and ityps from control file        
+!----------------------------------------------------------------------------------------------------------------------------------!
+control="control"
+INQUIRE(FILE=control,EXIST=exists)
+if (exists) then
+  open(unit=iunit,file=control,action="read")
+  !is it rhf or uhf calculation?
+  do 
+    read(iunit,'(a)',iostat=ierr) line
+    if (ierr /= 0) then 
+      exit
+    end if
+    tmplen = len_trim(line)
+    do i=1, tmplen
+      if (line(i:i) /= ' ') then
+        line2 = TRIM(TRIM(adjustl(line2))//line(i:i))
+      end if 
+    end do
+    if (line(1:4) == "$uhf") then
+      nspin = 2
+    end if
+  end do
+  close(iunit)
+  !------
+  open(unit=iunit,file=control,action="read")
+  do
+    line2 = ""
+    read(iunit,'(a)',iostat=ierr) line
+    if (ierr /= 0) then 
+      exit
+    end if
+
+    tmplen = len_trim(line)
+    do i=1, tmplen
+      if (line(i:i) /= ' ') then
+        line2 = TRIM(TRIM(adjustl(line2))//line(i:i))
+      end if 
+    end do
+
+    !method
+    if (line2(1:6) == "adc(2)") then
+      method = "adcp2"
+    else if (line2(1:3) == "cc2") then
+      method = "cc2"      
+    end if
+
+    !read symmetry
+    !write(6,*) TRIM(line2)
+    !read symmetry
+    !if (line2(2:9) == "symmetry") then
+    !  write(line2(10:),'(a)') sym
+    !end if
+
+    !read number of AOs = number of MOs
+    if (line2(1:8) == "nbf(CAO)") then
+      read(line2(10:),'(i10)') nao
+    end if
+    !read irreps
+    if (line2(1:5) == "irrep") then
+      i = 7
+      ityp = ""
+      !read label of irrep
+      do while ((line2(i:i) /= "m").AND.(line2(i:i) /= "n"))
+        ityp = trim(trim(adjustl(ityp))//line2(i:i))
+        i = i + 1
+      end do
+      ityps(nirrep) = ityp
+      ityp=""
+      !read multiplicity of irrep
+      if (line2(i:i) == "m") then
+        read(line2(i+13:i+13),'(i10)') imult
+        multis(nirrep) = imult
+      else
+        multis(nirrep) = 1
+      end if
+      !read number of states
+      
+      do while (line2(i:i+4) /= "nexc=")
+        i = i + 1
+      end do
+      i = i + 5
+      str_istate = ""
+      do while ((line2(i:i) /= "m").AND.(line2(i:i) /= "n"))
+        str_istate = trim(trim(adjustl(str_istate))//line2(i:i))
+        i = i + 1
+      end do
+      !states(nirrep) = str_istate
+      read(str_istate,'(i4)') states(nirrep)
+      str_istate = ""
+      nirrep = nirrep + 1
+    end if
+
+    line2 = ""
+  end do
+  close(iunit)
+else 
+  stop "control file does'nt exist."
+end if
+!write(6,*) multis(:)
+!write(6,*) ityps(:)
+!write(6,*) states(:)
+
+if ((method.ne."adc(2)").and.(method.ne."cc2")) then
+  stop "Use CC2 or ADC(2)!"
+end if
+
+!----------------------------------------------------------------------------------------------------------------------------------!
+! read and write transition density file
+!----------------------------------------------------------------------------------------------------------------------------------!
+do irrep=1, nirrep
+  nstate = states(irrep)
+  imult = multis(irrep)
+  ityp = ityps(irrep)
+  do istate=1, nstate
+    ! read right transition density:
+    if (method == "cc2") then
+      ctypden = 'cc2-tm0f'
+      !allocate(trdenright(nao,nao,nspin))
+    else if (method == "adc(2)") then
+      ctypden = 'adcp2-tm0f'
+    end if
+    allocate(trdenright_vector(((nao*nao)/2)+nao/2))
+    do i=1,(nao*nao)/2+nao/2
+      trdenright_vector(i) = 1.987654321
+    end do
+    allocate(trdenright(nao,nao,nspin))
+    write(filename,'(a,"-",i1,a,"-",i3.3,".mo")') trim(ctypden),imult,trim(ityp),istate
+    INQUIRE(FILE=trim(filename),EXIST=exists)
+    if (exists) then
+      open(iunit,file=trim(filename),form='unformatted',action="read")
+      rewind(iunit)
+      read(iunit,iostat=ierr) trdenright_vector(:)
+      kao = 1
+      do iao = 1, nao
+        do jao = 1, iao
+          trdenright(iao,jao,1) = trdenright_vector(kao)
+          if (iao /= jao) then
+            trdenright(jao,iao,1) = trdenright_vector(kao)
+          end if
+          kao = kao + 1
+        end do
+      end do
+      !do ispin = 1, nspin
+      !  read(iunit) trdenright(:,:,ispin)
+      !end do
+      close(iunit)
+      !write right transition density:
+      write(trd_out, '("trd-R-",i1,a,"-",i3.3,".dat")') imult,trim(ityp),istate
+      write(6,'(5a)') 'Convert ',trim(filename),' binary to ',trim(trd_out),' file.'
+      open(iunit,file=trim(trd_out),status='unknown')
+      rewind(iunit)
+      do ispin = 1, nspin
+        do iao = 1, nao
+          do jao = 1, nao
+            write(iunit,'(f25.20)') trdenright(jao,iao,nspin)
+          end do
+        end do
+      end do
+    close(iunit)
+    else
+       write(6,*) trim(filename)," file does'nt exist."
+    end if
+    deallocate(trdenright_vector)
+    deallocate(trdenright)
+
+    ! read left transition density:
+    if (method == "cc2") then
+      allocate(trdenleft_vector(((nao*nao)/2)+nao/2))
+      do i=1,(nao*nao)/2+nao/2
+        trdenleft_vector(i) = 1.987654321
+      end do
+      allocate(trdenleft(nao,nao,nspin))
+      ctypden = 'cc2-tmf0'
+      write(filename,'(a,"-",i1,a,"-",i3.3,".mo")') trim(ctypden),imult,trim(ityp),istate
+      INQUIRE(FILE=trim(filename),EXIST=exists)
+      if (exists) then
+        open(iunit,file=trim(filename),form='unformatted',access='sequential')
+        rewind(iunit)
+        read(iunit,iostat=ierr) trdenleft_vector(:)
+        kao = 1
+        do iao = 1, nao
+          do jao = 1, iao
+            trdenleft(iao,jao,1) = trdenleft_vector(kao)
+            if (iao /= jao) then
+              trdenleft(jao,iao,1) = trdenleft_vector(kao)
+            end if
+            kao = kao + 1
+          end do
+        end do
+        !do ispin = 1, nspin
+        !  read(iunit) trdenleft(:,:,ispin)
+        !end do
+        close(iunit)
+        !write left transition density:
+        write(trd_out, '("trd-L-",i1,a,"-",i3.3,".dat")') imult,trim(ityp),istate
+        write(6,'(5a)') 'Convert ',trim(filename),' binary to ',trim(trd_out),' file.'
+        open(iunit,file=trim(trd_out),status='unknown')
+        rewind(iunit)
+        do ispin = 1, nspin 
+          do iao = 1, nao
+            do jao = 1, nao
+              write(iunit,'(f25.20)') trdenleft(jao,iao,1)
+            end do
+          end do
+        end do
+        close(iunit)
+      else
+        write(6,*) trim(filename)," file does'nt exist."
+      end if
+      deallocate(trdenleft)
+    end if
+    
+  end do
+end do
+deallocate(ityps,multis,states)
+
+end subroutine ricc2trnden
+!==================================================================================================================================!
